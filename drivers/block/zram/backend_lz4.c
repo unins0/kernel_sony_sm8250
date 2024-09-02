@@ -7,133 +7,57 @@
 
 struct lz4_ctx {
 	void *mem;
-
-	LZ4_streamDecode_t *dstrm;
-	LZ4_stream_t *cstrm;
+	s32 level;
 };
 
-static void lz4_release_params(struct zcomp_params *params)
+static void lz4_destroy(void *ctx)
 {
-	LZ4_stream_t *dict_stream = params->drv_data;
-
-	params->drv_data = NULL;
-	if (!dict_stream)
-		return;
-
-	kfree(dict_stream);
-}
-
-static int lz4_setup_params(struct zcomp_params *params)
-{
-	LZ4_stream_t *dict_stream;
-	int ret;
-
-	if (params->level == ZCOMP_PARAM_NO_LEVEL)
-		params->level = LZ4_ACCELERATION_DEFAULT;
-
-	if (!params->dict || !params->dict_sz)
-		return 0;
-
-	dict_stream = kzalloc(sizeof(*dict_stream), GFP_KERNEL);
-	if (!dict_stream)
-		return -ENOMEM;
-
-	ret = LZ4_loadDict(dict_stream,
-			   params->dict, params->dict_sz);
-	if (ret != params->dict_sz) {
-		kfree(dict_stream);
-		return -EINVAL;
-	}
-	params->drv_data = dict_stream;
-
-	return 0;
-}
-
-static void lz4_destroy(struct zcomp_ctx *ctx)
-{
-	struct lz4_ctx *zctx = ctx->context;
-
-	if (!zctx)
-		return;
+	struct lz4_ctx *zctx = ctx;
 
 	vfree(zctx->mem);
-	kfree(zctx->dstrm);
-	kfree(zctx->cstrm);
 	kfree(zctx);
 }
 
-static int lz4_create(struct zcomp_params *params, struct zcomp_ctx *ctx)
+static void *lz4_create(void)
 {
-	struct lz4_ctx *zctx;
+	struct lz4_ctx *ctx;
 
-	zctx = kzalloc(sizeof(*zctx), GFP_KERNEL);
-	if (!zctx)
-		return -ENOMEM;
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return NULL;
 
-	ctx->context = zctx;
-	if (params->dict_sz == 0) {
-		zctx->mem = vmalloc(LZ4_MEM_COMPRESS);
-		if (!zctx->mem)
-			goto error;
-	} else {
-		zctx->dstrm = kzalloc(sizeof(*zctx->dstrm), GFP_KERNEL);
-		if (!zctx->dstrm)
-			goto error;
+	/* @FIXME: using a hardcoded LZ4_ACCELERATION_DEFAULT for now */
+	ctx->level = LZ4_ACCELERATION_DEFAULT;
+	ctx->mem = vmalloc(LZ4_MEM_COMPRESS);
+	if (!ctx->mem)
+		goto error;
 
-		zctx->cstrm = kzalloc(sizeof(*zctx->cstrm), GFP_KERNEL);
-		if (!zctx->cstrm)
-			goto error;
-	}
-
-	return 0;
-
+	return ctx;
 error:
 	lz4_destroy(ctx);
-	return -ENOMEM;
+	return NULL;
 }
 
-static int lz4_compress(struct zcomp_params *params, struct zcomp_ctx *ctx,
-			struct zcomp_req *req)
+static int lz4_compress(void *ctx, const unsigned char *src, size_t src_len,
+			unsigned char *dst, size_t *dst_len)
 {
-	struct lz4_ctx *zctx = ctx->context;
+	struct lz4_ctx *zctx = ctx;
 	int ret;
 
-	if (!zctx->cstrm) {
-		ret = LZ4_compress_fast(req->src, req->dst, req->src_len,
-					req->dst_len, params->level,
-					zctx->mem);
-	} else {
-		/* Cstrm needs to be reset */
-		memcpy(zctx->cstrm, params->drv_data, sizeof(*zctx->cstrm));
-		ret = LZ4_compress_fast_continue(zctx->cstrm, req->src,
-						 req->dst, req->src_len,
-						 req->dst_len, params->level);
-	}
+	ret = LZ4_compress_fast(src, dst, src_len, *dst_len,
+				zctx->level, zctx->mem);
 	if (!ret)
 		return -EINVAL;
-	req->dst_len = ret;
+	*dst_len = ret;
 	return 0;
 }
 
-static int lz4_decompress(struct zcomp_params *params, struct zcomp_ctx *ctx,
-			  struct zcomp_req *req)
+static int lz4_decompress(void *ctx, const unsigned char *src,
+			  size_t src_len, unsigned char *dst, size_t dst_len)
 {
-	struct lz4_ctx *zctx = ctx->context;
 	int ret;
 
-	if (!zctx->dstrm) {
-		ret = LZ4_decompress_safe(req->src, req->dst, req->src_len,
-					  req->dst_len);
-	} else {
-		/* Dstrm needs to be reset */
-		ret = LZ4_setStreamDecode(zctx->dstrm, params->dict,
-					  params->dict_sz);
-		if (!ret)
-			return -EINVAL;
-		ret = LZ4_decompress_safe_continue(zctx->dstrm, req->src,
-						   req->dst, req->src_len,
-						   req->dst_len);
-	}
+	ret = LZ4_decompress_safe(src, dst, src_len, dst_len);
 	if (ret < 0)
 		return -EINVAL;
 	return 0;
@@ -144,7 +68,5 @@ const struct zcomp_ops backend_lz4 = {
 	.decompress	= lz4_decompress,
 	.create_ctx	= lz4_create,
 	.destroy_ctx	= lz4_destroy,
-	.setup_params	= lz4_setup_params,
-	.release_params	= lz4_release_params,
 	.name		= "lz4",
 };
