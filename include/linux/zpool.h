@@ -35,6 +35,10 @@ void zpool_free(struct zpool *pool, unsigned long handle);
 int zpool_shrink(struct zpool *pool, unsigned int pages,
 			unsigned int *reclaimed);
 
+unsigned long zpool_compact(struct zpool *pool);
+
+unsigned long zpool_get_num_compacted(struct zpool *pool);
+
 void *zpool_obj_read_begin(struct zpool *zpool, unsigned long handle,
 			   void *local_copy);
 
@@ -46,7 +50,7 @@ void zpool_obj_write(struct zpool *zpool, unsigned long handle,
 
 u64 zpool_get_total_size(struct zpool *pool);
 
-
+size_t zpool_huge_class_size(struct zpool *zpool);
 /**
  * struct zpool_driver - driver implementation for zpool
  * @type:	name of the driver.
@@ -58,7 +62,10 @@ u64 zpool_get_total_size(struct zpool *pool);
  * @shrink:	shrink the pool.
  * @map:	map a handle.
  * @unmap:	unmap a handle.
+ * @compact:	try to run compaction over a pool
+ * @get_num_compacted:	get amount of compacted pages for a pool
  * @total_size:	get total size of a pool.
+ * @huge_class_size: huge class threshold for pool pages
  *
  * This is created by a zpool implementation and registered
  * with zpool.
@@ -82,6 +89,9 @@ struct zpool_driver {
 	int (*shrink)(void *pool, unsigned int pages,
 				unsigned int *reclaimed);
 
+	unsigned long (*compact)(void *pool);
+	unsigned long (*get_num_compacted)(void *pool);
+
 	void *(*obj_read_begin)(void *pool, unsigned long handle,
 				void *local_copy);
 	void (*obj_read_end)(void *pool, unsigned long handle,
@@ -90,6 +100,7 @@ struct zpool_driver {
 			  void *handle_mem, size_t mem_len);
 
 	u64 (*total_size)(void *pool);
+	size_t (*huge_class_size)(void *pool);
 };
 
 void zpool_register_driver(struct zpool_driver *driver);

@@ -62,7 +62,6 @@
 #include <linux/zsmalloc.h>
 #include <linux/zpool.h>
 #include <linux/mount.h>
-#include <linux/pseudo_fs.h>
 #include <linux/migrate.h>
 #include <linux/wait.h>
 #include <linux/pagemap.h>
@@ -320,7 +319,7 @@ static void zspage_read_unlock(struct zspage *zspage)
 {
 	struct zspage_lock *zsl = &zspage->zsl;
 
-	rwsem_release(&zsl->dep_map, _RET_IP_);
+	rwsem_release(&zsl->dep_map, 1, _RET_IP_);
 
 	spin_lock(&zsl->lock);
 	zsl->cnt--;
@@ -347,7 +346,7 @@ static void zspage_write_unlock(struct zspage *zspage)
 {
 	struct zspage_lock *zsl = &zspage->zsl;
 
-	rwsem_release(&zsl->dep_map, _RET_IP_);
+	rwsem_release(&zsl->dep_map, 1, _RET_IP_);
 
 	zsl->cnt = ZS_PAGE_UNLOCKED;
 	spin_unlock(&zsl->lock);
@@ -1046,9 +1045,6 @@ static struct zspage *alloc_zspage(struct zs_pool *pool,
 	if (!zspage)
 		return NULL;
 
-	if (!IS_ENABLED(CONFIG_COMPACTION))
-		gfp &= ~__GFP_MOVABLE;
-
 	zspage->magic = ZSPAGE_MAGIC;
 	zspage->class = class->index;
 	zspage_lock_init(zspage);
@@ -1236,19 +1232,19 @@ void zs_obj_write(struct zs_pool *pool, unsigned long handle,
 	class = zspage_class(pool, zspage);
 	off = offset_in_page(class->size * obj_idx);
 
-	if (!ZsHugePage(zspage))
-		off += ZS_HANDLE_SIZE;
-
-	if (off + mem_len <= PAGE_SIZE) {
+	if (off + class->size <= PAGE_SIZE) {
 		/* this object is contained entirely within a page */
 		void *dst = kmap_atomic(page);
 
+		if (!ZsHugePage(zspage))
+			off += ZS_HANDLE_SIZE;
 		memcpy(dst + off, handle_mem, mem_len);
 		kunmap_atomic(dst);
 	} else {
 		/* this object spans two pages */
 		size_t sizes[2];
 
+		off += ZS_HANDLE_SIZE;
 		sizes[0] = PAGE_SIZE - off;
 		sizes[1] = mem_len - sizes[0];
 
@@ -1684,14 +1680,15 @@ static void lock_zspage(struct zspage *zspage)
 }
 #endif /* CONFIG_COMPACTION */
 
-static int zs_init_fs_context(struct fs_context *fc)
+static struct dentry *zs_mount(struct file_system_type *fs_type,
+				int flags, const char *dev_name, void *data)
 {
-	return init_pseudo(fc, ZSMALLOC_MAGIC) ? 0 : -ENOMEM;
+	return mount_pseudo(fs_type, "zsmalloc:", NULL, NULL, ZSMALLOC_MAGIC);
 }
 
 static struct file_system_type zsmalloc_fs = {
 	.name		= "zsmalloc",
-	.init_fs_context = zs_init_fs_context,
+	.mount		= zs_mount,
 	.kill_sb	= kill_anon_super,
 };
 
