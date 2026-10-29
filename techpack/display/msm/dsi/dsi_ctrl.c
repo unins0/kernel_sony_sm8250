@@ -212,7 +212,16 @@ static int dsi_ctrl_debugfs_init(struct dsi_ctrl *dsi_ctrl,
 		return -EINVAL;
 	}
 
-	dsi_ctrl_debugfs_init(dsi_ctrl, parent);
+	snprintf(dbg_name, DSI_DEBUG_NAME_LEN, "dsi%d_ctrl",
+			dsi_ctrl->cell_index);
+
+	dir = debugfs_create_dir(dbg_name, parent);
+	if (IS_ERR_OR_NULL(dir)) {
+		rc = PTR_ERR(dir);
+		DSI_CTRL_ERR(dsi_ctrl, "debugfs create dir failed, rc=%d\n",
+				rc);
+		goto error;
+	}
 
 	state_file = debugfs_create_file("state_info",
 					 0444,
