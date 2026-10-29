@@ -986,8 +986,10 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 #endif
 
 	if (!msm_debugfs_late_init(ddev)) {
-		priv->debug_root = debugfs_create_dir("debug",
-						ddev->primary->debugfs_root);
+		/* sde_dbg_debugfs_register() creates the "debug" dir itself and
+		 * assigns priv->debug_root; a second create_dir("debug") hits
+		 * -EEXIST and the IS_ERR_OR_NULL handling NULLs it, breaking
+		 * sde_kms_postinit (-EINVAL) when CONFIG_DEBUG_FS=y. */
 		sde_dbg_debugfs_register(dev);
 	}
 
