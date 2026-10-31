@@ -28,6 +28,7 @@
 #include <linux/workqueue.h>
 #include <linux/freezer.h>
 #include <linux/compat.h>
+#include <linux/suspend.h>
 #include <linux/module.h>
 
 #include "posix-timers.h"
@@ -131,9 +132,167 @@ unlock:
 	return ret;
 }
 
+/*
+ * Suspend flow, Google v2 style (Pranav Prasad / Kelly Rossmoyer, LKML
+ * 2024-02, retro-port to 4.19): imminent alarms used to abort suspend at
+ * the very end of the flow (alarmtimer_suspend, -EBUSY at noirq stage),
+ * after all the expensive freeze/suspend work had been done. Google
+ * measured ~40% of all suspend failures on Android devices being imminent
+ * alarms. Instead, fail the suspend EARLY at the PM_SUSPEND_PREPARE
+ * notifier stage with -ETIME so userspace can retry cheaply until the
+ * alarm fires; the in-suspend check below remains only as a race
+ * protection for alarms armed between prepare and the suspend callback.
+ *
+ * The notifier intentionally does NOT touch freezer_delta: that deadline
+ * is owned by alarmtimer_suspend() (it arms the RTC/wakeup path for it),
+ * and a -ETIME abort here would skip the late callback entirely. POSIX
+ * alarms are visible in the alarm_bases queues and are what this early
+ * check is for.
+ */
+static s64 suspend_check_duration_ns = 2 * NSEC_PER_SEC;
+
+static ssize_t suspend_check_duration_show(struct kobject *kobj,
+					   struct kobj_attribute *attr,
+					   char *buf)
+{
+	return sprintf(buf, "%lld\n", suspend_check_duration_ns);
+}
+
+static ssize_t suspend_check_duration_store(struct kobject *kobj,
+					    struct kobj_attribute *attr,
+					    const char *buf, size_t n)
+{
+	u64 val;
+
+	if (kstrtou64(buf, 10, &val))
+		return -EINVAL;
+
+	suspend_check_duration_ns = min_t(u64, val, S64_MAX);
+
+	return n;
+}
+
+static struct kobj_attribute suspend_check_duration_attr =
+			__ATTR_RW(suspend_check_duration);
+
+static struct attribute *alarmtimer_attrs[] = {
+	&suspend_check_duration_attr.attr,
+	NULL,
+};
+
+static const struct attribute_group alarmtimer_attr_group = {
+	.name = "alarmtimer",
+	.attrs = alarmtimer_attrs,
+};
+
+/**
+ * alarmtimer_init_soonest - Initialize parameters to find the soonest alarm.
+ * @min: ptr to relative time to the soonest alarm to expire
+ * @expires: ptr to absolute time of the soonest alarm to expire
+ * @type: ptr to alarm type
+ */
+static void alarmtimer_init_soonest(ktime_t *min, ktime_t *expires, int *type)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&freezer_delta_lock, flags);
+	*min = freezer_delta;
+	*expires = freezer_expires;
+	*type = freezer_alarmtype;
+	freezer_delta = 0;
+	spin_unlock_irqrestore(&freezer_delta_lock, flags);
+}
+
+/**
+ * alarmtimer_get_soonest - Find the soonest alarm among the alarm bases.
+ * @min: ptr to relative time to the soonest alarm to expire
+ * @expires: ptr to absolute time of the soonest alarm to expire
+ * @type: ptr to alarm type
+ */
+static void alarmtimer_get_soonest(ktime_t *min, ktime_t *expires, int *type)
+{
+	int i;
+	unsigned long flags;
+
+	for (i = 0; i < ALARM_NUMTYPE; i++) {
+		struct alarm_base *base = &alarm_bases[i];
+		struct timerqueue_node *next;
+		ktime_t delta, exp = 0;
+		bool found = false;
+
+		spin_lock_irqsave(&base->lock, flags);
+		next = timerqueue_getnext(&base->timerqueue);
+		/* Copy the expiry under the lock: the alarm can be canceled
+		 * concurrently (before processes are frozen), freeing the
+		 * node right after the lock is dropped. */
+		if (next) {
+			exp = next->expires;
+			found = true;
+		}
+		spin_unlock_irqrestore(&base->lock, flags);
+		if (!found)
+			continue;
+		delta = ktime_sub(exp, base->gettime());
+		if (!(*min) || (delta < *min)) {
+			*expires = exp;
+			*min = delta;
+			*type = i;
+		}
+	}
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int alarmtimer_pm_callback(struct notifier_block *nb,
+				  unsigned long mode, void *_unused)
+{
+	ktime_t min = 0, expires = 0;
+	int type = 0;
+
+	switch (mode) {
+	case PM_SUSPEND_PREPARE:
+		/* Find the soonest POSIX alarm only; freezer_delta is
+		 * deliberately left alone here (see the comment above). */
+		alarmtimer_get_soonest(&min, &expires, &type);
+
+		if (min == 0)
+			return NOTIFY_DONE;
+
+		if (ktime_to_ns(min) < suspend_check_duration_ns) {
+			pr_warn("alarmtimer: suspend abort due to imminent alarm\n");
+			return notifier_from_errno(-ETIME);
+		}
+	}
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block alarmtimer_pm_notifier = {
+	.notifier_call = alarmtimer_pm_callback,
+};
+#endif /* CONFIG_PM_SLEEP */
+
+static int alarmtimer_sysfs_add(void)
+{
+	int ret;
+
+	/* kernel_kobj can be NULL only if ksysfs init failed: do not hit
+	 * the BUG_ON inside sysfs_create_group() on that path. */
+	if (!kernel_kobj)
+		return -ENOENT;
+
+	ret = sysfs_create_group(kernel_kobj, &alarmtimer_attr_group);
+	if (ret)
+		pr_warn("alarmtimer: failed to create sysfs group (%d)\n", ret);
+	return ret;
+}
+
 static inline void alarmtimer_rtc_timer_init(void)
 {
 	rtc_timer_init(&rtctimer, NULL, NULL);
+#ifdef CONFIG_PM_SLEEP
+	register_pm_notifier(&alarmtimer_pm_notifier);
+#endif
+	alarmtimer_sysfs_add();
 }
 
 static struct class_interface alarmtimer_rtc_interface = {
@@ -255,45 +414,31 @@ EXPORT_SYMBOL_GPL(alarm_expires_remaining);
 static int alarmtimer_suspend(struct device *dev)
 {
 	ktime_t min, now, expires;
-	int i, ret, type;
+	int ret, type;
 	struct rtc_device *rtc;
-	unsigned long flags;
 	struct rtc_time tm;
 
-	spin_lock_irqsave(&freezer_delta_lock, flags);
-	min = freezer_delta;
-	expires = freezer_expires;
-	type = freezer_alarmtype;
-	freezer_delta = 0;
-	spin_unlock_irqrestore(&freezer_delta_lock, flags);
+	/* Initialize parameters to find soonest timer */
+	alarmtimer_init_soonest(&min, &expires, &type);
 
 	rtc = alarmtimer_get_rtcdev();
 	/* If we have no rtcdev, just return */
 	if (!rtc)
 		return 0;
 
-	/* Find the soonest timer to expire*/
-	for (i = 0; i < ALARM_NUMTYPE; i++) {
-		struct alarm_base *base = &alarm_bases[i];
-		struct timerqueue_node *next;
-		ktime_t delta;
-
-		spin_lock_irqsave(&base->lock, flags);
-		next = timerqueue_getnext(&base->timerqueue);
-		spin_unlock_irqrestore(&base->lock, flags);
-		if (!next)
-			continue;
-		delta = ktime_sub(next->expires, base->gettime());
-		if (!min || (delta < min)) {
-			expires = next->expires;
-			min = delta;
-			type = i;
-		}
-	}
+	/* Find the soonest timer to expire */
+	alarmtimer_get_soonest(&min, &expires, &type);
 	if (min == 0)
 		return 0;
 
-	if (ktime_to_ns(min) < 2 * NSEC_PER_SEC) {
+	/*
+	 * Race protection only: imminent alarms are normally rejected early
+	 * at the PM_SUSPEND_PREPARE stage with -ETIME (see
+	 * alarmtimer_pm_callback). If an alarm got armed between prepare and
+	 * this callback, reject the attempt here and hold a short wakeup
+	 * event so the imminent alarm actually fires.
+	 */
+	if (ktime_to_ns(min) < suspend_check_duration_ns) {
 		__pm_wakeup_event(ws, ktime_to_ms(min) + 10);
 		return -EBUSY;
 	}
