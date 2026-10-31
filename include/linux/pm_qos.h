@@ -63,6 +63,12 @@ struct pm_qos_request {
 #endif
 	struct plist_node node;
 	int pm_qos_class;
+	/*
+	 * Debug only: call-site of pm_qos_add_request(), captured for the
+	 * read-only /sys/kernel/debug/pm_qos_requests dump (resolved to a
+	 * symbol via %pS). Never used for any decision-making.
+	 */
+	void *caller;
 };
 
 struct pm_qos_flags_request {

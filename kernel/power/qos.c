@@ -595,6 +595,9 @@ void pm_qos_add_request(struct pm_qos_request *req,
 		return;
 	}
 
+	/* Debug only: remember the call-site for the pm_qos_requests dump */
+	req->caller = (void *)_RET_IP_;
+
 	switch (req->type) {
 	case PM_QOS_REQ_AFFINE_CORES:
 		if (cpumask_empty(&req->cpus_affine)) {
@@ -871,6 +874,164 @@ static ssize_t pm_qos_power_write(struct file *filp, const char __user *buf,
 }
 
 
+/*
+ * Read-only debugfs dump of all PM QoS requests. Snapshot is taken under
+ * pm_qos_lock into static buffers and formatted after the lock is dropped
+ * (no sleeping or big work under a spinlock). Debug-only: no locking side
+ * effects, no behavioral changes.
+ */
+#define QOS_REQ_SNAP_MAX	128
+#define QOS_PERCPU_SNAP_MAX	64
+
+struct qos_req_snapshot {
+	int qos_class;
+	s32 value;
+	int type;
+	u32 irq;
+	void *caller;
+};
+
+static struct qos_req_snapshot qos_req_snap[QOS_REQ_SNAP_MAX];
+static struct { int cpu; s32 value; } qos_per_cpu_snap[QOS_PERCPU_SNAP_MAX];
+static s32 qos_target_snap[PM_QOS_NUM_CLASSES];
+static int qos_req_snap_cnt;
+static int qos_per_cpu_snap_cnt;
+static bool qos_per_cpu_trunc;
+static bool qos_req_trunc;
+/* Serializes snapshot+format: the buffers above are shared between
+ * concurrent debugfs readers. */
+static DEFINE_MUTEX(qos_dump_mutex);
+
+static void qos_debug_snapshot(void)
+{
+	struct pm_qos_constraints *con;
+	struct pm_qos_request *req;
+	int c, cpu;
+
+	qos_req_snap_cnt = 0;
+	qos_per_cpu_snap_cnt = 0;
+	qos_per_cpu_trunc = false;
+	qos_req_trunc = false;
+
+	spin_lock_irq(&pm_qos_lock);
+
+	for (c = 0; c < PM_QOS_NUM_CLASSES; c++) {
+		con = pm_qos_array[c]->constraints;
+		if (!con)
+			continue;
+
+		/* Capture the target under the lock: the formatter must not
+		 * touch live constraint data unlocked. */
+		qos_target_snap[c] = con->target_value;
+		/* Per-cpu effective targets are only meaningful for
+		 * CPU_DMA_LATENCY in practice; they gate deep idle, so
+		 * dump them separately. */
+		if (c == PM_QOS_CPU_DMA_LATENCY) {
+			for_each_possible_cpu(cpu) {
+				if (con->target_per_cpu[cpu] ==
+						con->default_value)
+					continue;
+				if (qos_per_cpu_snap_cnt <
+						QOS_PERCPU_SNAP_MAX) {
+					qos_per_cpu_snap[qos_per_cpu_snap_cnt].cpu =
+						cpu;
+					qos_per_cpu_snap[qos_per_cpu_snap_cnt].value =
+						con->target_per_cpu[cpu];
+					qos_per_cpu_snap_cnt++;
+				} else {
+					qos_per_cpu_trunc = true;
+				}
+			}
+		}
+
+		plist_for_each_entry(req, &con->list, node) {
+			if (qos_req_snap_cnt >= QOS_REQ_SNAP_MAX) {
+				qos_req_trunc = true;
+				break;
+			}
+			qos_req_snap[qos_req_snap_cnt].qos_class = c;
+			qos_req_snap[qos_req_snap_cnt].value = req->node.prio;
+			qos_req_snap[qos_req_snap_cnt].type = req->type;
+			qos_req_snap[qos_req_snap_cnt].irq = req->irq;
+			qos_req_snap[qos_req_snap_cnt].caller = req->caller;
+			qos_req_snap_cnt++;
+		}
+	}
+
+	spin_unlock_irq(&pm_qos_lock);
+}
+
+static void qos_debug_format(char *buf, size_t size)
+{
+	int c, i, n = 0;
+
+	for (c = 0; c < PM_QOS_NUM_CLASSES; c++) {
+		if (!pm_qos_array[c]->constraints)
+			continue;
+
+		n += scnprintf(buf + n, size - n, "%s: target=%d\n",
+			       pm_qos_array[c]->name, qos_target_snap[c]);
+	}
+
+	for (i = 0; i < qos_per_cpu_snap_cnt; i++)
+		n += scnprintf(buf + n, size - n,
+			       "  cpu_dma_latency percpu: cpu%d=%d\n",
+			       qos_per_cpu_snap[i].cpu,
+			       qos_per_cpu_snap[i].value);
+	if (qos_per_cpu_trunc)
+		n += scnprintf(buf + n, size - n,
+			       "  cpu_dma_latency percpu: TRUNCATED\n");
+
+	for (i = 0; i < qos_req_snap_cnt; i++) {
+		struct qos_req_snapshot *s = &qos_req_snap[i];
+
+		n += scnprintf(buf + n, size - n,
+			       "  [%s] value=%d type=%d irq=%u caller=%pS\n",
+			       pm_qos_array[s->qos_class]->name,
+			       s->value, s->type, s->irq, s->caller);
+	}
+	if (qos_req_trunc)
+		n += scnprintf(buf + n, size - n,
+			       "  requests: TRUNCATED\n");
+
+	/* scnprintf() caps silently at size; if the page filled up, stamp a
+	 * visible marker in the tail instead of pretending the dump is
+	 * complete. */
+	if (n >= (int)size - 1)
+		scnprintf(buf + size - 24, 24, "\n...OUTPUT TRUNCATED\n");
+}
+
+/* Serialized by qos_dump_mutex; regenerated only on a fresh read
+ * (*ppos == 0) so a multi-part read() cannot splice two different QoS
+ * states together. */
+static char qos_dump_cache[PAGE_SIZE];
+static size_t qos_dump_len;
+
+static ssize_t pm_qos_requests_read(struct file *file, char __user *user_buf,
+				    size_t count, loff_t *ppos)
+{
+	ssize_t ret;
+
+	mutex_lock(&qos_dump_mutex);
+	if (*ppos == 0) {
+		qos_debug_snapshot();
+		qos_dump_len = 0;
+		qos_debug_format(qos_dump_cache, PAGE_SIZE);
+		qos_dump_len = strlen(qos_dump_cache);
+	}
+	ret = simple_read_from_buffer(user_buf, count, ppos, qos_dump_cache,
+				      qos_dump_len);
+	mutex_unlock(&qos_dump_mutex);
+	return ret;
+}
+
+static const struct file_operations pm_qos_requests_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.read = pm_qos_requests_read,
+	.llseek = default_llseek,
+};
+
 static int __init pm_qos_power_init(void)
 {
 	int ret = 0;
@@ -880,6 +1041,16 @@ static int __init pm_qos_power_init(void)
 	BUILD_BUG_ON(ARRAY_SIZE(pm_qos_array) != PM_QOS_NUM_CLASSES);
 
 	/* Don't let userspace impose restrictions on CPU idle levels */
+#ifdef CONFIG_DEBUG_FS
+	/* Read-only dump of every PM QoS request (per class: target value
+	 * + requester call-sites), to see who holds votes, e.g. the
+	 * CPU_DMA_LATENCY blockers of deep idle. Not a control interface.
+	 */
+	if (!debugfs_create_file("pm_qos_requests", 0444, NULL, NULL,
+				 &pm_qos_requests_fops))
+		pr_warn("pm_qos: failed to create debugfs request dump\n");
+#endif
+
 	return 0;
 
 	d = debugfs_create_dir("pm_qos", NULL);
