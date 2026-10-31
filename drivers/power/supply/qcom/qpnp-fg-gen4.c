@@ -5044,11 +5044,19 @@ static void fg_gen4_somc_jeita_step_charge_work(struct work_struct *work)
 
 	mutex_lock(&fg->step_lock);
 
+	/* Hold awake only for this tick's measurements and FCC/FV votes:
+	 * held for the whole session it blocked /sys/power/wakeup_count and
+	 * thus all suspends while charging. Hardware JEITA limits in smb5
+	 * stay in force (sw JEITA is disabled in DT). */
+	fg_gen4_somc_jeita_step_wakelock(fg, true);
+
+	/* read input present status; done before the profile check so the
+	 * retry: path (reached before the assignment used to happen) never
+	 * reads an uninitialized value */
+	input_present = is_input_present(fg);
+
 	if (fg->profile_load_status != PROFILE_LOADED)
 		goto retry;
-
-	/* read input present status */
-	input_present = is_input_present(fg);
 
 	/* read msoc for log */
 	rc = fg_get_sram_prop(fg, FG_SRAM_MONOTONIC_SOC, &msoc);
@@ -5229,6 +5237,7 @@ retry:
 	if (input_present && (fg->charge_status != POWER_SUPPLY_STATUS_FULL)) {
 		schedule_delayed_work(&fg->somc_jeita_step_charge_work,
 							msecs_to_jiffies(2000));
+		fg_gen4_somc_jeita_step_wakelock(fg, false);
 	} else {
 		fg_dbg(fg, FG_SOMC,
 			"exit step_work input_present:%d status:%d\n",
