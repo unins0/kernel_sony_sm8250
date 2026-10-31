@@ -337,7 +337,7 @@
 	};
 
 	chosen {
-		bootargs = "noirqdebug rcupdate.rcu_expedited=1 rcu_nocbs=0-7 kpti=off";
+		bootargs = "noirqdebug rcu_nocbs=0-7 kpti=off workqueue.power_efficient=1";
 	};
 
 	firmware: firmware {
