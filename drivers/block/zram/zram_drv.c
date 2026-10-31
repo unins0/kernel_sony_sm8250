@@ -106,7 +106,9 @@ static void zram_slot_unlock(struct zram *zram, u32 index)
 {
 	unsigned long *lock = &zram->table[index].flags;
 
-	mutex_release(slot_dep_map(zram, index), 1, _RET_IP_);
+	/* 4.19 lockdep: mutex_release() takes (map, ip): the 3-arg
+	 * (nested) form is 5.2+, the yaap take must not use it here. */
+	mutex_release(slot_dep_map(zram, index), _RET_IP_);
 	clear_and_wake_up_bit(ZRAM_ENTRY_LOCK, lock);
 }
 
@@ -573,7 +575,7 @@ static void reset_bdev(struct zram *zram)
 		return;
 
 	bdev = zram->bdev;
-	blkdev_put(bdev, zram);
+	blkdev_put(bdev, FMODE_READ | FMODE_WRITE);
 	/* hope filp_close flush all of IO */
 	filp_close(zram->backing_dev, NULL);
 	zram->backing_dev = NULL;
@@ -660,8 +662,11 @@ static ssize_t backing_dev_store(struct device *dev,
 		goto out;
 	}
 
-	bdev = blkdev_get_by_dev(inode->i_rdev, BLK_OPEN_READ | BLK_OPEN_WRITE,
-				 zram, NULL);
+	/* 4.19 block layer: FMODE_* instead of BLK_OPEN_*, 3-arg
+	 * blkdev_get_by_dev() without holder_ops (see upstream 6.x
+	 * blk_holder_ops introduction). */
+	bdev = blkdev_get_by_dev(inode->i_rdev, FMODE_READ | FMODE_WRITE,
+				 zram);
 	if (IS_ERR(bdev)) {
 		err = PTR_ERR(bdev);
 		bdev = NULL;
@@ -698,7 +703,7 @@ out:
 	kvfree(bitmap);
 
 	if (bdev)
-		blkdev_put(bdev, zram);
+		blkdev_put(bdev, FMODE_READ | FMODE_WRITE);
 
 	if (backing_dev)
 		filp_close(backing_dev, NULL);
@@ -740,9 +745,13 @@ static void read_from_bdev_async(struct zram *zram, struct page *page,
 {
 	struct bio *bio;
 
-	bio = bio_alloc(zram->bdev, 1, parent->bi_opf, GFP_NOIO);
+	/* 4.19 block layer: bio_alloc() takes (gfp, nr_vecs), bdev and opf
+	 * are set separately (upstream 6.x folded them into bio_alloc()). */
+	bio = bio_alloc(GFP_NOIO, 1);
+	bio_set_dev(bio, zram->bdev);
+	bio->bi_opf = parent->bi_opf;
 	bio->bi_iter.bi_sector = entry * (PAGE_SIZE >> 9);
-	__bio_add_page(bio, page, PAGE_SIZE, 0);
+	bio_add_page(bio, page, PAGE_SIZE, 0);
 	bio_chain(bio, parent);
 	submit_bio(bio);
 }
@@ -887,10 +896,13 @@ static ssize_t writeback_store(struct device *dev,
 			goto next;
 		zram_slot_unlock(zram, index);
 
-		bio_init(&bio, zram->bdev, &bio_vec, 1,
-			 REQ_OP_WRITE | REQ_SYNC);
+		/* 4.19 block layer: bio_init() takes (bio, table, nr_vecs);
+		 * bdev and opf are set separately. */
+		bio_init(&bio, &bio_vec, 1);
+		bio_set_dev(&bio, zram->bdev);
+		bio.bi_opf = REQ_OP_WRITE | REQ_SYNC;
 		bio.bi_iter.bi_sector = blk_idx * (PAGE_SIZE >> 9);
-		__bio_add_page(&bio, page, PAGE_SIZE, 0);
+		bio_add_page(&bio, page, PAGE_SIZE, 0);
 
 		/*
 		 * XXX: A single page IO would be inefficient for write
@@ -967,9 +979,12 @@ static void zram_sync_read(struct work_struct *work)
 	struct bio_vec bv;
 	struct bio bio;
 
-	bio_init(&bio, zw->zram->bdev, &bv, 1, REQ_OP_READ);
+	/* 4.19 block layer: bio_init() takes (bio, table, nr_vecs) */
+	bio_init(&bio, &bv, 1);
+	bio_set_dev(&bio, zw->zram->bdev);
+	bio.bi_opf = REQ_OP_READ;
 	bio.bi_iter.bi_sector = zw->entry * (PAGE_SIZE >> 9);
-	__bio_add_page(&bio, zw->page, PAGE_SIZE, 0);
+	bio_add_page(&bio, zw->page, PAGE_SIZE, 0);
 	zw->error = submit_bio_wait(&bio);
 }
 
