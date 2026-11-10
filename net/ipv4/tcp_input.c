@@ -993,41 +993,41 @@ static void tcp_verify_retransmit_hint(struct tcp_sock *tp, struct sk_buff *skb)
 		tp->retransmit_skb_hint = skb;
 }
 
-/* Sum the number of packets on the wire we have marked as lost.
- * There are two cases we care about here:
- * a) Packet hasn't been marked lost (nor retransmitted),
- *    and this is the first loss.
- * b) Packet has been marked both lost and retransmitted,
- *    and this means we think it was lost again.
+/* Sum the number of packets on the wire we have marked as lost, and
+ * notify the congestion control module that the given skb was marked lost.
  */
-static void tcp_sum_lost(struct tcp_sock *tp, struct sk_buff *skb)
+static void tcp_notify_skb_loss_event(struct tcp_sock *tp, const struct sk_buff *skb)
+{
+	struct sock *sk = (struct sock *)tp;
+	const struct tcp_congestion_ops *ca_ops = inet_csk(sk)->icsk_ca_ops;
+
+	tp->lost += tcp_skb_pcount(skb);
+	if (ca_ops->skb_marked_lost)
+		ca_ops->skb_marked_lost(sk, skb);
+}
+
+void tcp_mark_skb_lost(struct sock *sk, struct sk_buff *skb)
 {
 	__u8 sacked = TCP_SKB_CB(skb)->sacked;
+	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (!(sacked & TCPCB_LOST) ||
-	    ((sacked & TCPCB_LOST) && (sacked & TCPCB_SACKED_RETRANS)))
-		tp->lost += tcp_skb_pcount(skb);
-}
+	if (sacked & TCPCB_SACKED_ACKED)
+		return;
 
-static void tcp_skb_mark_lost(struct tcp_sock *tp, struct sk_buff *skb)
-{
-	if (!(TCP_SKB_CB(skb)->sacked & (TCPCB_LOST|TCPCB_SACKED_ACKED))) {
-		tcp_verify_retransmit_hint(tp, skb);
-
-		tp->lost_out += tcp_skb_pcount(skb);
-		tcp_sum_lost(tp, skb);
-		TCP_SKB_CB(skb)->sacked |= TCPCB_LOST;
-	}
-}
-
-void tcp_skb_mark_lost_uncond_verify(struct tcp_sock *tp, struct sk_buff *skb)
-{
 	tcp_verify_retransmit_hint(tp, skb);
-
-	tcp_sum_lost(tp, skb);
-	if (!(TCP_SKB_CB(skb)->sacked & (TCPCB_LOST|TCPCB_SACKED_ACKED))) {
+	if (sacked & TCPCB_LOST) {
+		if (sacked & TCPCB_SACKED_RETRANS) {
+			/* Account for retransmits that are lost again */
+			TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_RETRANS;
+			tp->retrans_out -= tcp_skb_pcount(skb);
+			NET_ADD_STATS(sock_net(sk), LINUX_MIB_TCPLOSTRETRANSMIT,
+				      tcp_skb_pcount(skb));
+			tcp_notify_skb_loss_event(tp, skb);
+		}
+	} else {
 		tp->lost_out += tcp_skb_pcount(skb);
 		TCP_SKB_CB(skb)->sacked |= TCPCB_LOST;
+		tcp_notify_skb_loss_event(tp, skb);
 	}
 }
 
@@ -2321,7 +2321,8 @@ static void tcp_mark_head_lost(struct sock *sk, int packets, int mark_head)
 		if (cnt > packets)
 			break;
 
-		tcp_skb_mark_lost(tp, skb);
+		if (!(TCP_SKB_CB(skb)->sacked & TCPCB_LOST))
+			tcp_mark_skb_lost(sk, skb);
 
 		if (mark_head)
 			break;
@@ -2711,14 +2712,8 @@ void tcp_simple_retransmit(struct sock *sk)
 	unsigned int mss = tcp_current_mss(sk);
 
 	skb_rbtree_walk(skb, &sk->tcp_rtx_queue) {
-		if (tcp_skb_seglen(skb) > mss &&
-		    !(TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED)) {
-			if (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_RETRANS) {
-				TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_RETRANS;
-				tp->retrans_out -= tcp_skb_pcount(skb);
-			}
-			tcp_skb_mark_lost_uncond_verify(tp, skb);
-		}
+		if (tcp_skb_seglen(skb) > mss)
+			tcp_mark_skb_lost(sk, skb);
 	}
 
 	tcp_clear_retrans_hints_partial(tp);
