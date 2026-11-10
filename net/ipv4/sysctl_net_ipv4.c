@@ -580,6 +580,21 @@ static struct ctl_table ipv4_net_table[] = {
 		.proc_handler	= proc_dointvec
 	},
 	{
+		/*
+		 * PLB stays dormant on this 4.19 bbr port: bbr_can_use_ecn()
+		 * requires TCP_ECN_LOW, whose setter is not ported, so the
+		 * rehash path never fires even when enabled=1. The knob only
+		 * exposes the (dead) default for a future ECN/PLB plumbing.
+		 */
+		.procname	= "tcp_plb_enabled",
+		.data		= &init_net.ipv4.sysctl_tcp_plb_enabled,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
 		.procname	= "ip_dynaddr",
 		.data		= &init_net.ipv4.sysctl_ip_dynaddr,
 		.maxlen		= sizeof(int),

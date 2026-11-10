@@ -1547,8 +1547,9 @@ int tcp_fragment(struct sock *sk, enum tcp_queue tcp_queue,
 				  "old_factor: %d mss: %u sacked: %u "
 				  "1st pcount: %d 2nd pcount: %d "
 				  "1st len: %u 2nd len: %u ",
-				  TCP_SKB_CB(skb)->tx.in_flight, old_factor,
-				  mss_now, TCP_SKB_CB(skb)->sacked,
+				  (unsigned)TCP_SKB_CB(skb)->tx.in_flight,
+				  old_factor,
+				  mss_now, (unsigned)TCP_SKB_CB(skb)->sacked,
 				  tcp_skb_pcount(skb), tcp_skb_pcount(buff),
 				  skb->len, buff->len);
 			inflight_prev = 0;
