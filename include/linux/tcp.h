@@ -522,10 +522,10 @@ void tcp_sock_set_quickack(struct sock *sk, int val);
 int tcp_sock_set_syncnt(struct sock *sk, int val);
 int tcp_sock_set_user_timeout(struct sock *sk, int val);
 
-static inline bool dst_tcp_usec_ts(const struct dst_entry *dst)
-{
-	return dst_feature(dst, RTAX_FEATURE_TCP_USEC_TS);
-}
+/* dst_tcp_usec_ts() from upstream is intentionally not ported: the
+ * route-feature ECN/TS bits it needs are absent from the 4.19 UAPI
+ * (rtnetlink.h unchanged) and no in-tree caller needs the helper.
+ */
 
 int tcp_skb_shift(struct sk_buff *to, struct sk_buff *from, int pcount,
 		  int shiftlen);
