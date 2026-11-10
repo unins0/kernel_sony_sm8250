@@ -1227,6 +1227,11 @@ void tcp_rate_gen(struct sock *sk, u32 delivered, u32 lost,
 		  bool is_sack_reneg, struct rate_sample *rs);
 void tcp_rate_check_app_limited(struct sock *sk);
 
+static inline bool tcp_skb_sent_after(u64 t1, u64 t2, u32 seq1, u32 seq2)
+{
+	return t1 > t2 || (t1 == t2 && after(seq1, seq2));
+}
+
 /* If a retransmit failed due to local qdisc congestion or other local issues,
  * then we may have called tcp_set_skb_tso_segs() to increase the number of
  * segments in the skb without increasing the tx.in_flight. In all other cases,
