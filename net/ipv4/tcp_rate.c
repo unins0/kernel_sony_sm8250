@@ -92,9 +92,12 @@ void tcp_rate_skb_delivered(struct sock *sk, struct sk_buff *skb,
 
 		/* Record send time of most recently ACKed packet: */
 		tp->first_tx_mstamp  = tcp_skb_timestamp_us(skb);
-		/* Find the duration of the "send phase" of this window: */
-		rs->interval_us = tcp_stamp_us_delta(tp->first_tx_mstamp,
-						     scb->tx.first_tx_mstamp);
+		/* Find the duration of the "send phase" of this window:
+		 * the cb snapshot is u32 (truncated), so compare in the
+		 * same truncated u32 domain to stay wrap-coherent.
+		 */
+		rs->interval_us = tcp_stamp32_us_delta((u32)tp->first_tx_mstamp,
+						       scb->tx.first_tx_mstamp);
 
 	}
 	/* Mark off the skb delivered once it's sacked to avoid being
@@ -143,8 +146,9 @@ void tcp_rate_gen(struct sock *sk, u32 delivered, u32 lost,
 	 * longer phase.
 	 */
 	snd_us = rs->interval_us;				/* send phase */
-	ack_us = tcp_stamp_us_delta(tp->tcp_mstamp,
-				    rs->prior_mstamp); /* ack phase */
+	/* cb mstamps are u32 (truncated); compare in the same domain. */
+	ack_us = tcp_stamp32_us_delta((u32)tp->tcp_mstamp,
+				      (u32)rs->prior_mstamp); /* ack phase */
 	rs->interval_us = max(snd_us, ack_us);
 
 	/* Record both segment send and ack receive intervals */
