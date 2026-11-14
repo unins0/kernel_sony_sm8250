@@ -177,6 +177,7 @@ struct netns_ipv4 {
 	/* int (not u8) because 4.19 lacks proc_dou8vec_minmax, and
 	 * proc_dointvec on a u8 with maxlen=1 yields vleft=0 (dead ctl).
 	 */
+	int sysctl_tcp_ecn_low;
 	int sysctl_tcp_plb_enabled;
 	int sysctl_tcp_plb_idle_rehash_rounds;
 	int sysctl_tcp_plb_rehash_rounds;

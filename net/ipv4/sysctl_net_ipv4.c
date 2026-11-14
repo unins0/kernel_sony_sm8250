@@ -628,6 +628,15 @@ static struct ctl_table ipv4_net_table[] = {
 		.extra2		= &tcp_plb_max_cong_thresh,
 	},
 	{
+		.procname	= "tcp_ecn_low",
+		.data		= &init_net.ipv4.sysctl_tcp_ecn_low,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
 		.procname	= "ip_dynaddr",
 		.data		= &init_net.ipv4.sysctl_ip_dynaddr,
 		.maxlen		= sizeof(int),

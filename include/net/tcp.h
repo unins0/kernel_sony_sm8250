@@ -396,7 +396,11 @@ static inline void tcp_set_ecn_low_from_dst(struct sock *sk,
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (dst_feature(dst, RTAX_FEATURE_ECN_LOW))
+	/* The route hint sets the flag; the netns sysctl is an opt-in force
+	 * for stacks whose userspace cannot set route metrics.
+	 */
+	if (dst_feature(dst, RTAX_FEATURE_ECN_LOW) ||
+	    READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_ecn_low))
 		tp->ecn_flags |= TCP_ECN_LOW;
 }
 
