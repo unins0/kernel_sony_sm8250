@@ -314,6 +314,8 @@ struct fg_gen4_chip {
 	struct mutex		soc_scale_lock;
 	struct mutex		esr_calib_lock;
 	ktime_t			last_restart_time;
+	int			debug_batt_id_ohms;
+	bool			debug_batt_id_en;
 	char			batt_profile[PROFILE_LEN];
 	enum slope_limit_status	slope_limit_sts;
 	int			ki_coeff_full_soc[2];
@@ -1045,25 +1047,31 @@ static int fg_gen4_get_debug_batt_id(struct fg_dev *fg, int *batt_id)
 
 static bool is_debug_batt_id(struct fg_dev *fg)
 {
-	int debug_batt_id[2], rc;
+	struct fg_gen4_chip *chip = container_of(fg, struct fg_gen4_chip, fg);
+	int debug_batt_id[2], rc, id;
 
 	if (fg->batt_id_ohms < 0)
 		return false;
 
-	rc = fg_gen4_get_debug_batt_id(fg, debug_batt_id);
-	if (rc < 0) {
-		pr_err("Failed to get debug batt_id, rc=%d\n", rc);
-		return false;
+	/* Recompute only when the measured battery id changes; the fake
+	 * battery range registers are read-only.
+	 */
+	id = fg->batt_id_ohms;
+	if (chip->debug_batt_id_ohms != id) {
+		rc = fg_gen4_get_debug_batt_id(fg, debug_batt_id);
+		if (rc < 0) {
+			pr_err("Failed to get debug batt_id, rc=%d\n", rc);
+			return false;
+		}
+		chip->debug_batt_id_ohms = id;
+		chip->debug_batt_id_en =
+			is_between(debug_batt_id[0], debug_batt_id[1], id);
+		if (chip->debug_batt_id_en)
+			fg_dbg(fg, FG_POWER_SUPPLY,
+				"Debug battery id: %dohms\n", id);
 	}
 
-	if (is_between(debug_batt_id[0], debug_batt_id[1],
-		fg->batt_id_ohms)) {
-		fg_dbg(fg, FG_POWER_SUPPLY, "Debug battery id: %dohms\n",
-			fg->batt_id_ohms);
-		return true;
-	}
-
-	return false;
+	return chip->debug_batt_id_en;
 }
 
 static int fg_gen4_get_cell_impedance(struct fg_gen4_chip *chip, int *val)
@@ -8240,6 +8248,7 @@ static int fg_gen4_probe(struct platform_device *pdev)
 	fg->charge_status = -EINVAL;
 	fg->online_status = -EINVAL;
 	fg->batt_id_ohms = -EINVAL;
+	chip->debug_batt_id_ohms = -EINVAL;
 #if defined(CONFIG_SOMC_CHARGER_EXTENSION)
 	fg->real_temp_debug = -EINVAL;
 #endif
