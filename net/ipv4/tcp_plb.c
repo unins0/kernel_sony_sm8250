@@ -23,12 +23,7 @@
 
 /* Fallback for kernel 4.19 random API */
 #ifndef get_random_u32_below
-#define get_random_u32_below(n) (prandom_u32() % (n))
-#endif
-
-/* Map the plb_rehash call to ecn_rehash which actually exists in tcp.h */
-#ifndef plb_rehash
-#define plb_rehash ecn_rehash
+#define get_random_u32_below(n) ((n) ? prandom_u32() % (n) : 0)
 #endif
 
 /* Called once per round-trip to update PLB state for a connection. */
@@ -88,6 +83,7 @@ void tcp_plb_check_rehash(struct sock *sk, struct tcp_plb_state *plb)
 		return;
 
 	sk_rethink_txhash(sk);
+	sk_dst_reset(sk);
 	plb->consec_cong_rounds = 0;
 	tcp_sk(sk)->plb_rehash++;
 	NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPPLBREHASH);

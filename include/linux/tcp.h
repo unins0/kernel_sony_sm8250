@@ -415,7 +415,7 @@ struct tcp_sock {
 	struct saved_syn *saved_syn;
 
 	/* Rerouting information */
-		u16	ecn_rehash;	/* PLB triggered rehash attempts */
+	u32	plb_rehash;	/* PLB-triggered rehash attempts */
 };
 
 enum tsq_enum {

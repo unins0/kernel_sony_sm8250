@@ -175,17 +175,12 @@ struct netns_ipv4 {
 	atomic_t tfo_active_disable_times;
 	unsigned long tfo_active_disable_stamp;
 	/* int (not u8) because 4.19 lacks proc_dou8vec_minmax, and
-	 * proc_dointvec on a u8 with maxlen=1 yields vleft=0 (dead ctl);
-	 * sysctl_tcp_plb_cong_thresh is int for the same reason.
-	 * NOTE: on this 4.19 bbr port PLB stays loss-inert/dormant:
-	 * bbr_can_use_ecn() requires TCP_ECN_LOW, whose setter is not
-	 * ported, so bbr->ecn_eligible never rises and the rehash path
-	 * does not fire even with sysctl_tcp_plb_enabled=1.
+	 * proc_dointvec on a u8 with maxlen=1 yields vleft=0 (dead ctl).
 	 */
 	int sysctl_tcp_plb_enabled;
-	u8 sysctl_tcp_plb_idle_rehash_rounds;
-	u8 sysctl_tcp_plb_rehash_rounds;
-	u8 sysctl_tcp_plb_suspend_rto_sec;
+	int sysctl_tcp_plb_idle_rehash_rounds;
+	int sysctl_tcp_plb_rehash_rounds;
+	int sysctl_tcp_plb_suspend_rto_sec;
 	int sysctl_tcp_plb_cong_thresh;
 
 	int sysctl_udp_wmem_min;

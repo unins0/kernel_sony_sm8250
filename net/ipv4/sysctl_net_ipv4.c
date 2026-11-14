@@ -52,6 +52,9 @@ static int ip_ping_group_range_max[] = { GID_T_MAX, GID_T_MAX };
 static int comp_sack_nr_max = 255;
 static u32 u32_max_div_HZ = UINT_MAX / HZ;
 static int one_day_secs = 24 * 3600;
+static int tcp_plb_max_rounds = 31;
+static int tcp_plb_max_cong_thresh = 256;
+static int tcp_plb_max_suspend = 255;
 static int tcp_delack_seg_min = TCP_DELACK_MIN;
 static int tcp_delack_seg_max = 60;
 static int tcp_use_userconfig_min;
@@ -580,12 +583,6 @@ static struct ctl_table ipv4_net_table[] = {
 		.proc_handler	= proc_dointvec
 	},
 	{
-		/*
-		 * PLB stays dormant on this 4.19 bbr port: bbr_can_use_ecn()
-		 * requires TCP_ECN_LOW, whose setter is not ported, so the
-		 * rehash path never fires even when enabled=1. The knob only
-		 * exposes the (dead) default for a future ECN/PLB plumbing.
-		 */
 		.procname	= "tcp_plb_enabled",
 		.data		= &init_net.ipv4.sysctl_tcp_plb_enabled,
 		.maxlen		= sizeof(int),
@@ -593,6 +590,42 @@ static struct ctl_table ipv4_net_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &zero,
 		.extra2		= &one,
+	},
+	{
+		.procname	= "tcp_plb_idle_rehash_rounds",
+		.data		= &init_net.ipv4.sysctl_tcp_plb_idle_rehash_rounds,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &tcp_plb_max_rounds,
+	},
+	{
+		.procname	= "tcp_plb_rehash_rounds",
+		.data		= &init_net.ipv4.sysctl_tcp_plb_rehash_rounds,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &tcp_plb_max_rounds,
+	},
+	{
+		.procname	= "tcp_plb_suspend_rto_sec",
+		.data		= &init_net.ipv4.sysctl_tcp_plb_suspend_rto_sec,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &tcp_plb_max_suspend,
+	},
+	{
+		.procname	= "tcp_plb_cong_thresh",
+		.data		= &init_net.ipv4.sysctl_tcp_plb_cong_thresh,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &tcp_plb_max_cong_thresh,
 	},
 	{
 		.procname	= "ip_dynaddr",

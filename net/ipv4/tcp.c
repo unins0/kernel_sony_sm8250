@@ -2657,6 +2657,7 @@ int tcp_disconnect(struct sock *sk, int flags)
 	tp->data_segs_out = 0;
 	tp->dsack_dups = 0;
 	tp->reord_seen = 0;
+	tp->plb_rehash = 0;
 	tp->rack.mstamp = 0;
 	tp->rack.advanced = 0;
 	tp->rack.reo_wnd_steps = 1;

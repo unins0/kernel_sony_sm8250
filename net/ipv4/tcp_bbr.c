@@ -69,7 +69,7 @@
 
 /* Fallback for kernel 4.19 which lacks get_random_u32_below */
 #ifndef get_random_u32_below
-#define get_random_u32_below(n) (prandom_u32() % (n))
+#define get_random_u32_below(n) ((n) ? prandom_u32() % (n) : 0)
 #endif
 
 #define BBR_VERSION		3
