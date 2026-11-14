@@ -885,15 +885,6 @@ struct tcp_skb_cb {
 	__u8		tcp_flags;	/* TCP header flags. (tcp[13])	*/
 
 	__u8		sacked;		/* State flags for SACK.	*/
-#define TCPCB_SACKED_ACKED	0x01	/* SKB ACK'd by a SACK block	*/
-#define TCPCB_SACKED_RETRANS	0x02	/* SKB retransmitted		*/
-#define TCPCB_LOST		0x04	/* SKB is lost			*/
-#define TCPCB_TAGBITS		0x07	/* All tag bits			*/
-#define TCPCB_REPAIRED		0x10	/* SKB repaired (no skb_mstamp_ns)	*/
-#define TCPCB_EVER_RETRANS	0x80	/* Ever retransmitted frame	*/
-#define TCPCB_RETRANS		(TCPCB_SACKED_RETRANS|TCPCB_EVER_RETRANS| \
-				TCPCB_REPAIRED)
-
 	__u8		ip_dsfield;	/* IPv4 tos or IPv6 dsfield	*/
 	__u8		txstamp_ack:1,	/* Record TX timestamp for ack? */
 			eor:1,		/* Is skb MSG_EOR marked? */
