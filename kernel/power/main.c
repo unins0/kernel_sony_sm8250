@@ -804,9 +804,13 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 			if (suspend_short_count == sbo_short_sleep_count) {
 				if (decay_alive_time_ms >= MSEC_PER_SEC) {
 					suspend_backoff(decay_alive_time_ms);
-					decay_alive_time_ms =
+					/* Decay with a floor: persistent churn
+					 * must not erode the backoff to zero.
+					 */
+					decay_alive_time_ms = max_t(u32,
 						decay_val(decay_alive_time_ms,
-							sbo_decay_value);
+							sbo_decay_value),
+						MSEC_PER_SEC);
 					goto out;
 				}
 			} else {
