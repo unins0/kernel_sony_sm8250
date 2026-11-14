@@ -388,13 +388,17 @@ static inline void tcp_dec_quickack_mode(struct sock *sk)
 #define	TCP_ECN_QUEUE_CWR	2
 #define	TCP_ECN_DEMAND_CWR	4
 #define	TCP_ECN_SEEN		8
-/* ECN/PLB event plumbing intentionally not ported: BBR runs loss-based
- * (DECIDED), so TCP_ECN_LOW has no setter on this 4.19 tree (upstream
- * sets it from the "ecn_low" per-route feature, whose RTAX bit is not
- * ported either).  TCP_ECN_ECT_PERMANENT is set only by bbr3 itself.
- */
 #define	TCP_ECN_LOW		16
 #define	TCP_ECN_ECT_PERMANENT	32
+
+static inline void tcp_set_ecn_low_from_dst(struct sock *sk,
+					    const struct dst_entry *dst)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	if (dst_feature(dst, RTAX_FEATURE_ECN_LOW))
+		tp->ecn_flags |= TCP_ECN_LOW;
+}
 
 enum tcp_tw_status {
 	TCP_TW_SUCCESS = 0,
