@@ -21,6 +21,8 @@
 #include <linux/ipc_logging.h>
 #include <linux/uidgid.h>
 #include <linux/pm_wakeup.h>
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
 
 #include <net/sock.h>
 #include <uapi/linux/sched/types.h>
@@ -299,6 +301,76 @@ static void qrtr_log_rx_msg(struct qrtr_node *node, struct sk_buff *skb)
 				  cb->type, cb->src_node);
 	}
 }
+
+/* Bucket endpoint RX by src node:port: remote service ports are the stable
+ * attribution key; local client ports are ephemeral and fall into data_hi. */
+#define QRTR_RXSTAT_NODES	16
+#define QRTR_RXSTAT_PORTS	256
+static u64 qrtr_rxstat_data[QRTR_RXSTAT_NODES][QRTR_RXSTAT_PORTS];
+static u64 qrtr_rxstat_ctrl_new[QRTR_RXSTAT_PORTS];
+static u64 qrtr_rxstat_ctrl_del[QRTR_RXSTAT_PORTS];
+static u64 qrtr_rxstat_data_hi;
+static u64 qrtr_rxstat_node_hi;
+static u64 qrtr_rxstat_ctrl_other;
+
+static void qrtr_rxstat_track(struct sk_buff *skb)
+{
+	struct qrtr_cb *cb = (struct qrtr_cb *)skb->cb;
+	struct qrtr_ctrl_pkt pkt = {0,};
+
+	if (cb->type == QRTR_TYPE_DATA) {
+		if (cb->src_node >= QRTR_RXSTAT_NODES) {
+			qrtr_rxstat_node_hi++;
+			return;
+		}
+		if (cb->src_port < QRTR_RXSTAT_PORTS)
+			qrtr_rxstat_data[cb->src_node][cb->src_port]++;
+		else
+			qrtr_rxstat_data_hi++;
+		return;
+	}
+
+	if (cb->type == QRTR_TYPE_NEW_SERVER ||
+	    cb->type == QRTR_TYPE_DEL_SERVER) {
+		u32 svc;
+
+		skb_copy_bits(skb, 0, &pkt, sizeof(pkt));
+		svc = le32_to_cpu(pkt.server.service);
+		if (svc >= QRTR_RXSTAT_PORTS)
+			svc = QRTR_RXSTAT_PORTS - 1;
+		if (cb->type == QRTR_TYPE_NEW_SERVER)
+			qrtr_rxstat_ctrl_new[svc]++;
+		else
+			qrtr_rxstat_ctrl_del[svc]++;
+	} else {
+		qrtr_rxstat_ctrl_other++;
+	}
+}
+
+static int qrtr_rxstat_show(struct seq_file *m, void *v)
+{
+	int n, p;
+
+	seq_printf(m, "data_hi %llu node_hi %llu ctrl_other %llu\n",
+		   qrtr_rxstat_data_hi, qrtr_rxstat_node_hi,
+		   qrtr_rxstat_ctrl_other);
+	for (n = 0; n < QRTR_RXSTAT_NODES; n++)
+		for (p = 0; p < QRTR_RXSTAT_PORTS; p++)
+			if (qrtr_rxstat_data[n][p])
+				seq_printf(m, "data node %u port %u %llu\n",
+					   n, p, qrtr_rxstat_data[n][p]);
+	for (p = 0; p < QRTR_RXSTAT_PORTS; p++) {
+		if (qrtr_rxstat_ctrl_new[p])
+			seq_printf(m, "ctrl new svc %u %llu\n",
+				   p, qrtr_rxstat_ctrl_new[p]);
+		if (qrtr_rxstat_ctrl_del[p])
+			seq_printf(m, "ctrl del svc %u %llu\n",
+				   p, qrtr_rxstat_ctrl_del[p]);
+	}
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(qrtr_rxstat);
 
 static bool refcount_dec_and_rwsem_lock(refcount_t *r,
 					struct rw_semaphore *sem)
@@ -850,6 +922,7 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
 	skb->len = size;
 	skb_store_bits(skb, 0, data + hdrlen, size);
 	qrtr_log_rx_msg(node, skb);
+	qrtr_rxstat_track(skb);
 
 	skb_queue_tail(&node->rx_queue, skb);
 	kthread_queue_work(&node->kworker, &node->read_data);
@@ -2014,6 +2087,9 @@ static int __init qrtr_proto_init(void)
 		sock_unregister(qrtr_family.family);
 		proto_unregister(&qrtr_proto);
 	}
+
+	debugfs_create_file_unsafe("qrtr_rxstats", 0444, NULL, NULL,
+				   &qrtr_rxstat_fops);
 
 	qrtr_backup_init();
 
